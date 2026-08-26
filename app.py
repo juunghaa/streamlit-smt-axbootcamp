@@ -2,13 +2,17 @@
 SMT 사전 공정(납도포) 불량 분석 - 통합 대시보드
 사용법: streamlit run app.py
 
-[모델 학습] 탭 - 이 파일이 있으면 코랩 없이 바로 새 모델을 학습/비교할 수 있습니다.
-  - fusion_features.csv   (코랩 Cell 9에서 이미 저장하던 파일 그대로)
+[개요]          - 전체 파이프라인 상태를 한눈에 요약
+[모델 학습]     - fusion_features.csv 하나로 코랩 없이 새 모델 학습/실험
+[모델 비교]     - 학습된 모델들 성능/피처중요도 비교
+[전처리 확인]   - 매칭 현황, 결측치, 이상치, 전/후 비교
+[필터/조회]     - 샘플 단위 조회 + 썸네일
 
-[모델 비교] [전처리 확인] [필터/조회] 탭 - 기존과 동일하게 아래 파일을 사용합니다.
-  - all_results.json, feature_importance_all.csv   (모델 학습 탭에서 자동 생성/갱신됨.
-    코랩에서 만든 것도 같은 이름으로 두면 함께 합쳐서 보입니다)
-  - data_quality_report.json, raw_sensor_sequences.json, sample_metadata.csv, thumbnails/
+필요 파일 (기존과 동일한 이름, 같은 폴더에 두면 자동 인식):
+  - fusion_features.csv                              (코랩 Cell 9 결과)
+  - all_results.json, feature_importance_all.csv     (모델 학습 탭에서 자동 생성/갱신)
+  - data_quality_report.json, raw_sensor_sequences.json,
+    sample_metadata.csv, thumbnails/                 (코랩 Cell 7-1 결과)
 """
 
 import json
@@ -21,7 +25,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from sklearn.decomposition import PCA
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score, precision_score, recall_score
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -34,10 +39,17 @@ THUMB_DIR = DATA_DIR / "thumbnails"
 RESULTS_PATH = DATA_DIR / "all_results.json"
 IMPORTANCE_PATH = DATA_DIR / "feature_importance_all.csv"
 FUSION_PATH = DATA_DIR / "fusion_features.csv"
+QUALITY_PATH = DATA_DIR / "data_quality_report.json"
+RAW_SEQ_PATH = DATA_DIR / "raw_sensor_sequences.json"
+METADATA_PATH = DATA_DIR / "sample_metadata.csv"
 
 SENSOR_COLS = ["temperature", "humidity", "vibration", "acceleration", "noise"]
+DEFECT_LABEL_MAP = {0: "정상", 1: "불량(미납)"}
 
 
+# ------------------------------------------------------------------
+# 공통 유틸
+# ------------------------------------------------------------------
 def load_json(path: Path):
     if not path.exists():
         return None
@@ -73,24 +85,111 @@ def load_fusion_features():
     return pd.read_csv(FUSION_PATH)
 
 
-st.title("🔧 SMT 사전 공정(납도포) 불량 분석 대시보드")
+def status_badge(ok: bool, label: str):
+    return f"🟢 {label}" if ok else f"⚪ {label}"
 
-tab_train, tab_model, tab_quality, tab_filter = st.tabs(
-    ["🧪 모델 학습", "📊 모델 비교", "🔍 전처리 확인", "🗂️ 필터/조회"]
-)
 
-# =================================================================
-# TAB 0. 모델 학습 (코랩 없이 여기서 바로)
-# =================================================================
-with tab_train:
-    fusion_df = load_fusion_features()
+# ------------------------------------------------------------------
+# 데이터 로드 (여러 페이지에서 공용으로 사용)
+# ------------------------------------------------------------------
+fusion_df_global = load_fusion_features()
+all_results_global = load_json(RESULTS_PATH)
+importance_df_global = load_csv(IMPORTANCE_PATH)
+quality_report_global = load_json(QUALITY_PATH)
+metadata_global = load_csv(METADATA_PATH)
+
+# ------------------------------------------------------------------
+# 사이드바 : 네비게이션 + 데이터 상태
+# ------------------------------------------------------------------
+st.sidebar.title("🔧 SMT 불량 분석")
+st.sidebar.caption("사전 공정(납도포) · SPI 검사 대시보드")
+
+PAGES = ["🏠 개요", "🧪 모델 학습", "📊 모델 비교", "🔍 전처리 확인", "🗂️ 필터/조회"]
+page = st.sidebar.radio("메뉴", PAGES, label_visibility="collapsed")
+
+st.sidebar.divider()
+st.sidebar.markdown("**데이터 파일 상태**")
+st.sidebar.markdown(status_badge(fusion_df_global is not None, "fusion_features.csv"))
+st.sidebar.markdown(status_badge(all_results_global is not None, "all_results.json"))
+st.sidebar.markdown(status_badge(quality_report_global is not None, "data_quality_report.json"))
+st.sidebar.markdown(status_badge(metadata_global is not None, "sample_metadata.csv"))
+st.sidebar.markdown(status_badge(THUMB_DIR.exists(), "thumbnails/"))
+
+if fusion_df_global is not None:
+    st.sidebar.divider()
+    st.sidebar.metric("총 샘플 수", len(fusion_df_global))
+    if "label" in fusion_df_global.columns:
+        defect_rate = fusion_df_global["label"].mean() * 100
+        st.sidebar.metric("불량 비율", f"{defect_rate:.1f}%")
+
+
+# ====================================================================
+# PAGE 0. 개요 (한눈에 보기)
+# ====================================================================
+if page == "🏠 개요":
+    st.title("🏠 SMT 사전 공정(납도포) 불량 분석 — 개요")
+    st.caption("SMT 전체 불량의 60~70%가 납도포 단계에서 발생합니다. 이 대시보드는 센서(공정) + 이미지(SPI) 데이터를 결합해 불량을 사전에 탐지하는 파이프라인을 실험/모니터링합니다.")
+
+    st.subheader("파이프라인 현황")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("병합 데이터셋", f"{len(fusion_df_global)} 건" if fusion_df_global is not None else "없음")
+    k2.metric("학습된 모델 수", len(all_results_global) if all_results_global else 0)
+    if all_results_global:
+        best_name = max(all_results_global, key=lambda k: all_results_global[k]["cv_auc_mean"])
+        best_auc = all_results_global[best_name]["cv_auc_mean"]
+        k3.metric("최고 성능 모델", best_name, f"AUC {best_auc:.3f}")
+    else:
+        k3.metric("최고 성능 모델", "-")
+    if quality_report_global:
+        k4.metric("이상치 샘플", quality_report_global.get("total_outlier_samples", "-"))
+    else:
+        k4.metric("이상치 샘플", "-")
+
+    st.divider()
+    c1, c2 = st.columns([1.3, 1])
+    with c1:
+        st.subheader("6대 불량 유형")
+        defect_info = pd.DataFrame([
+            ("1. 미납 (Missing)", "패드에 솔더 전혀 미도포", "전기적 단선(Open)"),
+            ("2. 납부족 (Insufficient)", "도포량/면적 부족", "냉납(Cold Joint)"),
+            ("3. 납쇼트 (Short/Bridge)", "인접 패드 간 브릿지", "회로 합선"),
+            ("4. 납볼 (Solder Ball)", "패드 외곽 미세 납 입자", "2차 쇼트 위험"),
+            ("5. 납좌표 밀림 (Shifted)", "패드 중심 이탈", "톰스톤 현상"),
+            ("6. 납형성 불량 (Deform)", "도포 형태 불규칙", "기공(Void)"),
+        ], columns=["불량 유형", "현상", "주요 영향"])
+        st.dataframe(defect_info, use_container_width=True, hide_index=True)
+        st.caption("※ 현재 학습 데이터는 '미납' 이진 분류 기준이며, 구조상 다중분류(6종)로 확장 가능합니다.")
+    with c2:
+        st.subheader("현재 데이터 구성")
+        if fusion_df_global is not None:
+            id_cols = [c for c in ["file_base", "label", "img_label"] if c in fusion_df_global.columns]
+            sensor_n = len([c for c in fusion_df_global.columns if c not in id_cols and not c.startswith("emb_")])
+            image_n = len([c for c in fusion_df_global.columns if c.startswith("emb_")])
+            fig = px.pie(
+                pd.DataFrame({"구분": ["센서 피처", "이미지 임베딩"], "개수": [sensor_n, image_n]}),
+                names="구분", values="개수", hole=0.55,
+                color="구분", color_discrete_map={"센서 피처": "#4C78A8", "이미지 임베딩": "#F58518"},
+            )
+            fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("fusion_features.csv 를 넣으면 여기에 피처 구성이 표시됩니다.")
+
+    st.divider()
+    st.info("👉 왼쪽 사이드바에서 페이지를 이동하세요. **모델 학습**에서 새 모델을 만들고, **모델 비교**에서 성능을 비교하고, **전처리 확인 / 필터·조회**에서 원본 데이터 품질을 점검할 수 있습니다.")
+
+
+# ====================================================================
+# PAGE 1. 모델 학습
+# ====================================================================
+elif page == "🧪 모델 학습":
+    st.title("🧪 모델 학습")
+    fusion_df = fusion_df_global
 
     if fusion_df is None:
         st.error(
             f"`{FUSION_PATH.name}` 파일이 필요합니다. "
-            "코랩 Cell 9에서 저장한 fusion_features.csv를 이 앱과 같은 폴더에 넣어주세요. "
-            "(이미지 임베딩 추출까지 끝난 병합 피처 테이블이라, 이 파일 하나만 있으면 "
-            "이후 모델 실험은 코랩 없이 여기서 계속할 수 있습니다)"
+            "코랩 Cell 9에서 저장한 fusion_features.csv를 이 앱과 같은 폴더에 넣어주세요."
         )
     else:
         id_cols = [c for c in ["file_base", "label", "img_label"] if c in fusion_df.columns]
@@ -98,26 +197,69 @@ with tab_train:
         sensor_cols_all = [c for c in all_feature_cols if not c.startswith("emb_")]
         image_cols_all = [c for c in all_feature_cols if c.startswith("emb_")]
 
-        st.subheader("새 모델 학습")
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        # ---- 상단 요약 카드 ----
+        s1, s2, s3 = st.columns(3)
+        s1.metric("전체 샘플", len(fusion_df))
+        s2.metric("센서 피처", len(sensor_cols_all))
+        s3.metric("이미지 피처", len(image_cols_all))
+
+        st.divider()
+        left, right = st.columns([1, 1.4])
+
+        # ---------------- 왼쪽: 설정 패널 ----------------
+        with left:
+            st.subheader("① 기본 설정")
             algo = st.selectbox("알고리즘", ["XGBoost", "RandomForest", "LogisticRegression"])
-        with c2:
             feature_set = st.selectbox("사용할 피처", ["전체(센서+이미지)", "센서만", "이미지만"])
-        with c3:
             model_name = st.text_input("모델 이름", value=f"{algo}_{feature_set.split('(')[0]}")
 
-        with st.expander("하이퍼파라미터 (기본값으로도 충분히 동작합니다)"):
-            if algo == "XGBoost":
-                n_estimators = st.slider("n_estimators", 50, 500, 300, step=50)
-                max_depth = st.slider("max_depth", 2, 10, 4)
-                learning_rate = st.select_slider("learning_rate", [0.01, 0.03, 0.05, 0.1, 0.2], value=0.05)
-            elif algo == "RandomForest":
-                n_estimators = st.slider("n_estimators", 50, 500, 300, step=50)
-                max_depth = st.slider("max_depth", 2, 20, 8)
-            else:
-                c_value = st.select_slider("C (규제 강도, 작을수록 강함)", [0.01, 0.1, 1.0, 10.0], value=1.0)
+            st.subheader("② 데이터 분할 / 검증")
+            test_size = st.slider("Test set 비율", 0.1, 0.4, 0.2, step=0.05)
+            random_state = st.number_input("random_state (재현성)", value=42, step=1)
+            cv_folds = st.slider("교차검증 fold 수", 3, 10, 5)
+            shuffle_cv = st.checkbox("CV 시 셔플", value=True)
 
+            st.subheader("③ 클래스 불균형 / 임계값")
+            balance_classes = st.checkbox(
+                "클래스 불균형 자동 보정",
+                value=False,
+                help="XGBoost: scale_pos_weight 자동 계산 / RandomForest·LogisticRegression: class_weight='balanced'",
+            )
+            decision_threshold = st.slider(
+                "분류 임계값 (기본 0.5)", 0.05, 0.95, 0.5, step=0.05,
+                help="불량(1)로 판정할 확률 컷오프. 미탐(재현율)이 중요하면 낮추고, 오탐(정밀도)이 중요하면 높이세요.",
+            )
+
+            st.subheader("④ 이미지 임베딩 차원 축소 (선택)")
+            use_pca = st.checkbox(
+                "PCA로 이미지 임베딩(512차원) 축소",
+                value=False,
+                help="샘플 수 대비 이미지 피처(512차원)가 과도하게 많을 때 과적합 방지에 도움이 됩니다.",
+            )
+            pca_components = None
+            if use_pca and len(image_cols_all) > 0:
+                pca_components = st.slider("PCA 성분 수", 2, min(100, len(image_cols_all)), 20)
+
+            with st.expander("하이퍼파라미터 세부 조정", expanded=False):
+                if algo == "XGBoost":
+                    n_estimators = st.slider("n_estimators", 50, 800, 300, step=50)
+                    max_depth = st.slider("max_depth", 2, 12, 4)
+                    learning_rate = st.select_slider("learning_rate", [0.01, 0.03, 0.05, 0.1, 0.2, 0.3], value=0.05)
+                    subsample = st.slider("subsample", 0.5, 1.0, 0.8, step=0.05)
+                    colsample_bytree = st.slider("colsample_bytree", 0.5, 1.0, 0.8, step=0.05)
+                    min_child_weight = st.slider("min_child_weight (과적합 방지)", 1, 10, 1)
+                    reg_lambda = st.select_slider("reg_lambda (L2)", [0.0, 0.1, 0.5, 1.0, 2.0, 5.0], value=1.0)
+                elif algo == "RandomForest":
+                    n_estimators = st.slider("n_estimators", 50, 800, 300, step=50)
+                    max_depth = st.slider("max_depth", 2, 30, 8)
+                    min_samples_leaf = st.slider("min_samples_leaf", 1, 20, 1)
+                    max_features = st.select_slider("max_features", ["sqrt", "log2", None], value="sqrt")
+                else:
+                    c_value = st.select_slider("C (규제 강도, 작을수록 강함)", [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0], value=1.0)
+                    penalty = st.selectbox("penalty", ["l2", "l1"])
+                    solver = "liblinear" if penalty == "l1" else "lbfgs"
+
+        # 피처셋 결정
         if feature_set == "전체(센서+이미지)":
             feature_cols = all_feature_cols
         elif feature_set == "센서만":
@@ -125,81 +267,142 @@ with tab_train:
         else:
             feature_cols = image_cols_all
 
-        if st.button("🚀 학습 시작", type="primary"):
-            with st.spinner(f"{model_name} 학습 중..."):
-                X = fusion_df[feature_cols]
-                y = fusion_df["label"]
+        # ---------------- 오른쪽: 실행 & 결과 ----------------
+        with right:
+            st.subheader("⑤ 학습 실행")
+            st.caption(f"선택된 피처 수: **{len(feature_cols)}개**  |  피처셋: {feature_set}")
+            run = st.button("🚀 학습 시작", type="primary", use_container_width=True)
 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=y
-                )
+            if run:
+                with st.spinner(f"{model_name} 학습 중..."):
+                    X = fusion_df[feature_cols].copy()
+                    y = fusion_df["label"]
 
-                if algo == "XGBoost":
-                    model = xgb.XGBClassifier(
-                        n_estimators=n_estimators, max_depth=max_depth,
-                        learning_rate=learning_rate, subsample=0.8, colsample_bytree=0.8,
-                        eval_metric="logloss", random_state=42,
+                    # PCA (이미지 임베딩에만 적용, 센서 피처는 그대로 유지)
+                    used_image_cols = [c for c in feature_cols if c in image_cols_all]
+                    used_sensor_cols = [c for c in feature_cols if c in sensor_cols_all]
+                    if use_pca and pca_components and len(used_image_cols) > 0:
+                        pca = PCA(n_components=pca_components, random_state=random_state)
+                        emb_reduced = pca.fit_transform(X[used_image_cols])
+                        emb_cols_new = [f"emb_pca_{i}" for i in range(pca_components)]
+                        X = pd.concat(
+                            [X[used_sensor_cols].reset_index(drop=True),
+                             pd.DataFrame(emb_reduced, columns=emb_cols_new)],
+                            axis=1,
+                        )
+                        feature_cols_used = used_sensor_cols + emb_cols_new
+                        explained = pca.explained_variance_ratio_.sum()
+                    else:
+                        feature_cols_used = feature_cols
+                        explained = None
+
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size, random_state=random_state, stratify=y
                     )
-                elif algo == "RandomForest":
-                    model = RandomForestClassifier(
-                        n_estimators=n_estimators, max_depth=max_depth, random_state=42
+
+                    pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+
+                    if algo == "XGBoost":
+                        model = xgb.XGBClassifier(
+                            n_estimators=n_estimators, max_depth=max_depth,
+                            learning_rate=learning_rate, subsample=subsample,
+                            colsample_bytree=colsample_bytree, min_child_weight=min_child_weight,
+                            reg_lambda=reg_lambda,
+                            scale_pos_weight=pos_weight if balance_classes else 1.0,
+                            eval_metric="logloss", random_state=random_state,
+                        )
+                    elif algo == "RandomForest":
+                        model = RandomForestClassifier(
+                            n_estimators=n_estimators, max_depth=max_depth,
+                            min_samples_leaf=min_samples_leaf, max_features=max_features,
+                            class_weight="balanced" if balance_classes else None,
+                            random_state=random_state,
+                        )
+                    else:
+                        model = make_pipeline(
+                            StandardScaler(),
+                            LogisticRegression(
+                                C=c_value, penalty=penalty, solver=solver, max_iter=3000,
+                                class_weight="balanced" if balance_classes else None,
+                            ),
+                        )
+
+                    model.fit(X_train, y_train)
+                    proba = model.predict_proba(X_test)[:, 1]
+                    pred = (proba >= decision_threshold).astype(int)
+
+                    skf = StratifiedKFold(n_splits=cv_folds, shuffle=shuffle_cv,
+                                           random_state=random_state if shuffle_cv else None)
+                    cv_scores = cross_val_score(model, X, y, cv=skf, scoring="roc_auc")
+
+                    if algo == "LogisticRegression":
+                        coefs = np.abs(model.named_steps["logisticregression"].coef_[0])
+                        imp = pd.Series(coefs, index=feature_cols_used).sort_values(ascending=False)
+                    else:
+                        imp = pd.Series(model.feature_importances_, index=feature_cols_used).sort_values(ascending=False)
+
+                    sensor_in_set = [c for c in feature_cols_used if c in sensor_cols_all or c.startswith("emb_pca_") is False and c in sensor_cols_all]
+                    sensor_in_set = [c for c in feature_cols_used if not c.startswith("emb_")]
+                    image_in_set = [c for c in feature_cols_used if c.startswith("emb_")]
+
+                    entry = {
+                        "model_name": model_name,
+                        "accuracy": float(accuracy_score(y_test, pred)),
+                        "f1": float(f1_score(y_test, pred)),
+                        "precision": float(precision_score(y_test, pred, zero_division=0)),
+                        "recall": float(recall_score(y_test, pred, zero_division=0)),
+                        "auc": float(roc_auc_score(y_test, proba)),
+                        "cv_auc_scores": [float(s) for s in cv_scores],
+                        "cv_auc_mean": float(cv_scores.mean()),
+                        "confusion_matrix": confusion_matrix(y_test, pred).tolist(),
+                        "confusion_matrix_labels": ["정상", "불량"],
+                        "sensor_importance_sum": float(imp[sensor_in_set].sum()) if sensor_in_set else 0.0,
+                        "image_importance_sum": float(imp[image_in_set].sum()) if image_in_set else 0.0,
+                        "n_train": int(len(X_train)),
+                        "n_test": int(len(X_test)),
+                        "n_total": int(len(X)),
+                        "threshold": decision_threshold,
+                        "used_pca": bool(use_pca and pca_components),
+                        "pca_explained_variance": float(explained) if explained is not None else None,
+                    }
+
+                    all_results = load_json(RESULTS_PATH) or {}
+                    all_results[model_name] = entry
+                    save_all_results(all_results)
+
+                    imp_df = imp.reset_index()
+                    imp_df.columns = ["feature", "importance"]
+                    imp_df["feature_type"] = imp_df["feature"].apply(
+                        lambda x: "이미지(ResNet)" if x.startswith("emb_") else "센서"
                     )
-                else:
-                    model = make_pipeline(
-                        StandardScaler(), LogisticRegression(C=c_value, max_iter=2000)
-                    )
+                    save_importance(model_name, imp_df.head(30))
 
-                model.fit(X_train, y_train)
-                pred = model.predict(X_test)
-                proba = model.predict_proba(X_test)[:, 1]
+                st.success(f"'{model_name}' 학습 완료!")
 
-                skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-                cv_scores = cross_val_score(model, X, y, cv=skf, scoring="roc_auc")
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Accuracy", f"{entry['accuracy']*100:.1f}%")
+                m2.metric("Precision", f"{entry['precision']:.3f}")
+                m3.metric("Recall", f"{entry['recall']:.3f}")
+                m4.metric("F1", f"{entry['f1']:.3f}")
+                m5.metric("AUC (5-fold CV)", f"{entry['cv_auc_mean']:.3f}")
 
-                # 피처 중요도 (모델 종류에 따라 다르게 추출)
-                if algo == "LogisticRegression":
-                    coefs = np.abs(model.named_steps["logisticregression"].coef_[0])
-                    imp = pd.Series(coefs, index=feature_cols).sort_values(ascending=False)
-                else:
-                    imp = pd.Series(model.feature_importances_, index=feature_cols).sort_values(ascending=False)
+                if entry["used_pca"]:
+                    st.caption(f"PCA 적용됨 · 설명된 분산 비율: {entry['pca_explained_variance']*100:.1f}%")
 
-                sensor_in_set = [c for c in feature_cols if c in sensor_cols_all]
-                image_in_set = [c for c in feature_cols if c in image_cols_all]
+                st.caption("자세한 비교는 왼쪽 사이드바 → **모델 비교** 페이지에서 확인하세요.")
+            else:
+                st.info("왼쪽에서 설정을 조정한 뒤 '학습 시작'을 누르세요. 학습 결과는 자동 저장되어 [모델 비교] 페이지에 누적됩니다.")
 
-                entry = {
-                    "model_name": model_name,
-                    "accuracy": float(accuracy_score(y_test, pred)),
-                    "f1": float(f1_score(y_test, pred)),
-                    "auc": float(roc_auc_score(y_test, proba)),
-                    "cv_auc_scores": [float(s) for s in cv_scores],
-                    "cv_auc_mean": float(cv_scores.mean()),
-                    "confusion_matrix": confusion_matrix(y_test, pred).tolist(),
-                    "confusion_matrix_labels": ["정상", "불량"],
-                    "sensor_importance_sum": float(imp[sensor_in_set].sum()) if sensor_in_set else 0.0,
-                    "image_importance_sum": float(imp[image_in_set].sum()) if image_in_set else 0.0,
-                    "n_train": int(len(X_train)),
-                    "n_test": int(len(X_test)),
-                    "n_total": int(len(X)),
-                }
-
-                all_results = load_json(RESULTS_PATH) or {}
-                all_results[model_name] = entry
-                save_all_results(all_results)
-
-                imp_df = imp.reset_index()
-                imp_df.columns = ["feature", "importance"]
-                imp_df["feature_type"] = imp_df["feature"].apply(
-                    lambda x: "이미지(ResNet)" if x.startswith("emb_") else "센서"
-                )
-                save_importance(model_name, imp_df.head(30))
-
-            st.success(f"'{model_name}' 학습 완료! 아래에서 바로 결과를 확인하거나, [모델 비교] 탭에서 다른 모델과 비교하세요.")
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Accuracy", f"{entry['accuracy']*100:.1f}%")
-            m2.metric("F1", f"{entry['f1']:.3f}")
-            m3.metric("AUC (Holdout)", f"{entry['auc']:.3f}")
-            m4.metric("AUC (5-fold CV)", f"{entry['cv_auc_mean']:.3f}")
+        st.divider()
+        with st.expander("💡 추가로 시도해볼 수 있는 변수 조정 아이디어"):
+            st.markdown(
+                "- **PCA 성분 수**를 줄이면 이미지 피처의 과적합 위험이 줄지만 정보 손실이 생깁니다 (5~50 사이 비교 추천)\n"
+                "- **클래스 불균형 보정**을 켜고 끄면서 Recall/Precision 트레이드오프 비교\n"
+                "- **분류 임계값**을 0.3~0.4로 낮추면 불량 미탐지(Recall)를 줄일 수 있습니다 (공정 특성상 미탐이 더 치명적인 경우 유용)\n"
+                "- **센서만 / 이미지만** 피처셋으로 각각 학습해 어느 모달리티가 더 기여하는지 비교\n"
+                "- XGBoost의 `min_child_weight`, `reg_lambda`를 올리면 작은 데이터셋에서 과적합을 줄이는 데 도움\n"
+                "- (향후) 6대 불량 전체 데이터가 준비되면 `label`을 다중클래스로 바꾸고 `objective='multi:softprob'`로 확장 가능"
+            )
 
         st.divider()
         st.caption(
@@ -207,25 +410,27 @@ with tab_train:
             f"센서 피처 {len(sensor_cols_all)}개, 이미지 피처 {len(image_cols_all)}개가 있습니다."
         )
 
-# =================================================================
-# TAB 1. 모델 비교
-# =================================================================
-with tab_model:
-    all_results = load_json(RESULTS_PATH)
-    importance_df = load_csv(IMPORTANCE_PATH)
+
+# ====================================================================
+# PAGE 2. 모델 비교
+# ====================================================================
+elif page == "📊 모델 비교":
+    st.title("📊 모델 비교")
+    all_results = all_results_global
+    importance_df = importance_df_global
 
     if all_results is None or importance_df is None:
-        st.info("아직 학습된 모델이 없습니다. [모델 학습] 탭에서 먼저 모델을 학습해주세요.")
+        st.info("아직 학습된 모델이 없습니다. [모델 학습] 페이지에서 먼저 모델을 학습해주세요.")
     else:
         model_names = list(all_results.keys())
-
-        st.subheader("전체 모델 성능 비교")
         compare_df = pd.DataFrame(
             [
                 {
                     "모델": name,
                     "Accuracy": r["accuracy"],
                     "F1": r["f1"],
+                    "Precision": r.get("precision"),
+                    "Recall": r.get("recall"),
                     "AUC (Holdout)": r["auc"],
                     "AUC (5-fold CV 평균)": r["cv_auc_mean"],
                 }
@@ -233,16 +438,26 @@ with tab_model:
             ]
         ).sort_values("AUC (5-fold CV 평균)", ascending=False)
 
+        # ---- 상단 요약 카드: 최고 성능 모델 ----
+        best_row = compare_df.iloc[0]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("🏆 최고 모델", best_row["모델"])
+        k2.metric("AUC (5-fold CV)", f"{best_row['AUC (5-fold CV 평균)']:.3f}")
+        k3.metric("F1", f"{best_row['F1']:.3f}")
+        k4.metric("학습된 모델 수", len(model_names))
+
+        st.divider()
+        st.subheader("전체 모델 성능 비교")
         st.dataframe(
             compare_df.style.format(
-                {c: "{:.3f}" for c in ["Accuracy", "F1", "AUC (Holdout)", "AUC (5-fold CV 평균)"]}
+                {c: "{:.3f}" for c in ["Accuracy", "F1", "Precision", "Recall", "AUC (Holdout)", "AUC (5-fold CV 평균)"]}
             ).background_gradient(cmap="Blues", subset=["AUC (5-fold CV 평균)"]),
             use_container_width=True,
             hide_index=True,
         )
 
         metric_for_chart = st.radio(
-            "비교 지표", ["Accuracy", "F1", "AUC (Holdout)", "AUC (5-fold CV 평균)"], horizontal=True
+            "비교 지표", ["Accuracy", "F1", "Precision", "Recall", "AUC (Holdout)", "AUC (5-fold CV 평균)"], horizontal=True
         )
         fig_compare = px.bar(
             compare_df.sort_values(metric_for_chart),
@@ -257,11 +472,12 @@ with tab_model:
         selected_model = st.selectbox("모델 선택", model_names)
         r = all_results[selected_model]
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Accuracy", f"{r['accuracy']*100:.1f}%")
-        c2.metric("F1 Score", f"{r['f1']:.3f}")
-        c3.metric("AUC (Holdout)", f"{r['auc']:.3f}")
-        c4.metric("AUC (5-fold CV 평균)", f"{r['cv_auc_mean']:.3f}")
+        c2.metric("Precision", f"{r.get('precision', 0):.3f}")
+        c3.metric("Recall", f"{r.get('recall', 0):.3f}")
+        c4.metric("F1", f"{r['f1']:.3f}")
+        c5.metric("AUC (5-fold CV)", f"{r['cv_auc_mean']:.3f}")
 
         left, right = st.columns(2)
         with left:
@@ -272,8 +488,10 @@ with tab_model:
                 z=cm, x=[f"예측: {l}" for l in labels], y=[f"실제: {l}" for l in labels],
                 text=cm, texttemplate="%{text}", colorscale="Blues", showscale=False,
             ))
-            fig_cm.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10))
+            fig_cm.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_cm, use_container_width=True)
+            if r.get("threshold") is not None:
+                st.caption(f"분류 임계값: {r['threshold']}" + (" · PCA 적용됨" if r.get("used_pca") else ""))
 
         with right:
             st.markdown("**센서 vs 이미지 기여도**")
@@ -285,7 +503,7 @@ with tab_model:
                 contrib, names="구분", values="중요도 합", hole=0.5, color="구분",
                 color_discrete_map={"센서": "#4C78A8", "이미지(ResNet)": "#F58518"},
             )
-            fig_contrib.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10))
+            fig_contrib.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_contrib, use_container_width=True)
 
         st.markdown("**상위 피처 중요도**")
@@ -300,16 +518,18 @@ with tab_model:
             fig_bar.update_layout(height=max(350, top_n * 24), margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_bar, use_container_width=True)
 
-# =================================================================
-# TAB 2. 전처리 확인
-# =================================================================
-with tab_quality:
-    quality_report = load_json(DATA_DIR / "data_quality_report.json")
-    raw_sequences = load_json(DATA_DIR / "raw_sensor_sequences.json")
-    sample_metadata = load_csv(DATA_DIR / "sample_metadata.csv")
+
+# ====================================================================
+# PAGE 3. 전처리 확인
+# ====================================================================
+elif page == "🔍 전처리 확인":
+    st.title("🔍 전처리 확인")
+    quality_report = quality_report_global
+    raw_sequences = load_json(RAW_SEQ_PATH)
+    sample_metadata = metadata_global
 
     if quality_report is None or sample_metadata is None:
-        st.error("`data_quality_report.json`, `sample_metadata.csv` 파일이 필요합니다. (colab_export_quality.py 실행 후 다운로드)")
+        st.error("`data_quality_report.json`, `sample_metadata.csv` 파일이 필요합니다. (코랩 Cell 7-1 실행 후 다운로드)")
     else:
         st.subheader("데이터 매칭 및 품질 개요")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -343,7 +563,7 @@ with tab_quality:
                 quality_report["outlier_per_feature_top10"].items(), columns=["피처", "이상치 개수"]
             )
             fig_out = px.bar(outlier_top, x="이상치 개수", y="피처", orientation="h")
-            fig_out.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
+            fig_out.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_out, use_container_width=True)
 
         st.divider()
@@ -354,6 +574,9 @@ with tab_quality:
         picked = st.selectbox("샘플 선택 (file_base)", sample_options)
         row = sample_metadata[sample_metadata["file_base"] == picked].iloc[0]
 
+        badge = "🔴 이상치" if row["is_outlier"] else "🟢 정상 범위"
+        st.markdown(f"**판정:** {row['defect_type']}  |  **이상치 스코어:** {row['outlier_score']}  |  {badge}")
+
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**변환 전: 원본 센서 시계열**")
@@ -363,7 +586,7 @@ with tab_quality:
                 for col in SENSOR_COLS:
                     if col in seq:
                         fig_raw.add_trace(go.Scatter(y=seq[col], mode="lines", name=col))
-                fig_raw.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="시점", yaxis_title="측정값")
+                fig_raw.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="시점", yaxis_title="측정값")
                 st.plotly_chart(fig_raw, use_container_width=True)
             else:
                 st.info("이 샘플의 원본 시계열 데이터를 찾을 수 없습니다.")
@@ -374,27 +597,24 @@ with tab_quality:
             if mean_cols:
                 after_df = pd.DataFrame({"피처": mean_cols, "값": [row[c] for c in mean_cols]})
                 fig_after = px.bar(after_df, x="값", y="피처", orientation="h")
-                fig_after.update_layout(height=350, margin=dict(l=10, r=10, t=10, b=10))
+                fig_after.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10))
                 st.plotly_chart(fig_after, use_container_width=True)
-
-        badge = "🔴 이상치" if row["is_outlier"] else "🟢 정상 범위"
-        st.markdown(f"**판정:** {row['defect_type']}  |  **이상치 스코어:** {row['outlier_score']}  |  {badge}")
 
         thumb_path = THUMB_DIR / f"{picked}.jpg"
         if thumb_path.exists():
             st.image(str(thumb_path), caption=picked, width=200)
 
-# =================================================================
-# TAB 3. 필터 / 조회
-# =================================================================
-with tab_filter:
-    sample_metadata = load_csv(DATA_DIR / "sample_metadata.csv")
+
+# ====================================================================
+# PAGE 4. 필터 / 조회
+# ====================================================================
+elif page == "🗂️ 필터/조회":
+    st.title("🗂️ 필터 / 조회")
+    sample_metadata = metadata_global
 
     if sample_metadata is None:
-        st.error("`sample_metadata.csv` 파일이 필요합니다. (colab_export_quality.py 실행 후 다운로드)")
+        st.error("`sample_metadata.csv` 파일이 필요합니다. (코랩 Cell 7-1 실행 후 다운로드)")
     else:
-        st.subheader("조건별 샘플 조회")
-
         f1, f2, f3 = st.columns(3)
         with f1:
             defect_types = sorted(sample_metadata["defect_type"].unique())
@@ -424,8 +644,8 @@ with tab_filter:
 
         page_size = 24
         total_pages = max(1, (len(filtered) - 1) // page_size + 1)
-        page = st.number_input("페이지", min_value=1, max_value=total_pages, value=1)
-        page_df = filtered.iloc[(page - 1) * page_size: page * page_size]
+        page_num = st.number_input("페이지", min_value=1, max_value=total_pages, value=1)
+        page_df = filtered.iloc[(page_num - 1) * page_size: page_num * page_size]
 
         cols = st.columns(6)
         for i, (_, row) in enumerate(page_df.iterrows()):

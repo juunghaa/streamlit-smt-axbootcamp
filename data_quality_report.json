@@ -1,0 +1,22 @@
+{
+  "total_sensor_json": 2657,
+  "total_images": 2657,
+  "matched_samples": 2657,
+  "sensor_only_unmatched": 0,
+  "image_only_unmatched": 0,
+  "features_with_missing": {},
+  "samples_with_any_missing": 0,
+  "outlier_per_feature_top10": {
+    "humidity_min": 128,
+    "humidity_mean": 120,
+    "humidity_last": 114,
+    "noise_first": 113,
+    "noise_mean": 106,
+    "humidity_max": 102,
+    "noise_max": 102,
+    "humidity_first": 102,
+    "noise_min": 99,
+    "noise_last": 57
+  },
+  "total_outlier_samples": 222
+}

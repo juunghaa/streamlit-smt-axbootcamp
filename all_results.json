@@ -1,0 +1,68 @@
+{
+  "LogisticRegression_전체": {
+    "model_name": "LogisticRegression_전체",
+    "accuracy": 0.9868421052631579,
+    "f1": 0.989010989010989,
+    "auc": 0.9997051886792452,
+    "cv_auc_scores": [
+      0.9998083726415095,
+      0.9992924528301886,
+      0.9992754480392737,
+      0.9979446383154906,
+      0.9971017921570947
+    ],
+    "cv_auc_mean": 0.9986845407967113,
+    "confusion_matrix": [
+      [
+        210,
+        2
+      ],
+      [
+        5,
+        315
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "정상",
+      "불량"
+    ],
+    "sensor_importance_sum": 1.941913104165662,
+    "image_importance_sum": 20.92064786412221,
+    "n_train": 2125,
+    "n_test": 532,
+    "n_total": 2657
+  },
+  "RandomForest_전체": {
+    "model_name": "RandomForest_전체",
+    "accuracy": 0.9849624060150376,
+    "f1": 0.9875776397515528,
+    "auc": 0.9996167452830189,
+    "cv_auc_scores": [
+      1.0,
+      0.9999705188679244,
+      0.9996599041816998,
+      0.9998225587034956,
+      0.9997486248299521
+    ],
+    "cv_auc_mean": 0.9998403213166144,
+    "confusion_matrix": [
+      [
+        206,
+        6
+      ],
+      [
+        2,
+        318
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "정상",
+      "불량"
+    ],
+    "sensor_importance_sum": 0.09903242584416319,
+    "image_importance_sum": 0.9009675741558367,
+    "n_train": 2125,
+    "n_test": 532,
+    "n_total": 2657
+  }
+}

@@ -1,11 +1,12 @@
 streamlit
-pandas
-numpy
+pandas<2.3
+numpy<2.0
 plotly
 scikit-learn
 xgboost
 joblib
 dill
 shap
-tensorflow-cpu
+tensorflow<2.17
 Pillow
+matplotlib

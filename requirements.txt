@@ -7,5 +7,5 @@ xgboost
 joblib
 dill
 shap
-tensorflow
+tensorflow-cpu
 Pillow

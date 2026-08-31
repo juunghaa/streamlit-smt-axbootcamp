@@ -64,5 +64,43 @@
     "n_train": 2125,
     "n_test": 532,
     "n_total": 2657
+  },
+  "XGBoost_전체": {
+    "model_name": "XGBoost_전체",
+    "accuracy": 1.0,
+    "f1": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "auc": 1.0,
+    "cv_auc_scores": [
+      1.0,
+      1.0,
+      1.0,
+      0.9999852132252912,
+      1.0
+    ],
+    "cv_auc_mean": 0.9999970426450583,
+    "confusion_matrix": [
+      [
+        212,
+        0
+      ],
+      [
+        0,
+        320
+      ]
+    ],
+    "confusion_matrix_labels": [
+      "정상",
+      "불량"
+    ],
+    "sensor_importance_sum": 0.11852484941482544,
+    "image_importance_sum": 0.881475031375885,
+    "n_train": 2125,
+    "n_test": 532,
+    "n_total": 2657,
+    "threshold": 0.5,
+    "used_pca": false,
+    "pca_explained_variance": null
   }
 }

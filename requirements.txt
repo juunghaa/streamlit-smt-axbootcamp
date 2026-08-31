@@ -4,3 +4,8 @@ numpy
 plotly
 scikit-learn
 xgboost
+joblib
+dill
+shap
+tensorflow
+Pillow

@@ -675,6 +675,16 @@ elif page == "모델 학습·비교 (2x2)":
                         st.markdown("**SHAP 기반 센서 vs 이미지 기여도**")
                         try:
                             import shap
+
+                            import json
+
+                            # XGBoost 모델의 base_score를 SHAP이 읽을 수 있는 형태로 정리
+                            if hasattr(fusion_model, "get_booster"):
+                                booster = fusion_model.get_booster()
+                                config = json.loads(booster.save_config())
+                                config["learner"]["learner_model_param"]["base_score"] = "0.5"
+                                booster.load_config(json.dumps(config))
+                                
                             explainer = shap.TreeExplainer(fusion_model)
                             shap_values = explainer.shap_values(X_eval)
                             if isinstance(shap_values, list):

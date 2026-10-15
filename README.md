@@ -7,6 +7,16 @@ CNN / ResNet50) × 분류기(RandomForest / XGBoost) 2x2 조합 실험 결과를
 
 **배포된 앱:** https://app-smt-axbootcamp-jyf4uagjwi9e7b9r5pyke3.streamlit.app/
 
+## 저장소 범위와 실험 근거
+
+이 저장소에는 저장소 소유자가 단독 구현한 Streamlit 대시보드의 코드와 배포 자료가 있습니다. 모델 학습·평가는 6인 팀이 Google Colab에서 조합을 나눠 진행했습니다. 저장소 소유자는 EDA·전처리 노트북(v7·v8)과 Custom CNN+XGBoost 조합을 맡았습니다. 학습 노트북은 이 저장소에 포함되어 있지 않습니다.
+
+팀은 센서 단독과 이미지·센서 Fusion을 비교하고, Train·Validation 촬영 시간 겹침을 제거한 뒤 최종 발표에 사용할 실행본을 합의했습니다. 선택 근거와 남은 한계는 [모델 선정과 평가 데이터 분리 결정](docs/decisions.md)에 정리했습니다.
+
+**결과 파일의 범위:** `model_comparison_results.csv`는 대시보드에 포함한 별도 실행의 2×2 결과입니다. 최종 발표 기준 실행의 ResNet50+XGBoost 성능은 Accuracy 0.9995, F1 0.9996, ROC-AUC 1.0000입니다. `data_quality_report.json`의 2,657건은 앱에 포함한 데이터의 품질 점검 결과이며, 전체 실험의 제거 후 Train 15,193건·Validation 2,043건과 범위가 다릅니다.
+
+**Colab 근거:** [최종 발표 기준 실행](https://colab.research.google.com/drive/1tIppNNjtLAXvdL8wcsAKu8SUCOtGAFat) · [단독·Fusion 8종 비교](https://colab.research.google.com/drive/1kqYAj5BSE-90oiR6nG7jQeCLptl0XC8R) (둘 다 읽기 전용)
+
 ---
 
 ## 주요 기능
